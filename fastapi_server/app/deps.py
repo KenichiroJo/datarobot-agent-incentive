@@ -25,6 +25,7 @@ from app.ag_ui.stream_manager import AGUIStreamManager, create_stream_manager
 from app.auth.api_key import APIKeyValidator
 from app.auth.oauth import get_oauth
 from app.chats import ChatRepository
+from app.commission.session_store import CommissionSessionStore
 from app.config import Config
 from app.db import DBCtx, create_db_ctx
 from app.messages import MessageRepository
@@ -47,6 +48,7 @@ class Deps:
     tokens: Tokens
     user_repo: UserRepository
     stream_manager: AGUIStreamManager[UUID, Dict[str, str]]
+    commission_session_store: CommissionSessionStore
 
 
 def sqlite_uri_to_path(uri: str) -> Path | None:
@@ -117,6 +119,8 @@ async def create_deps(
         config=config,
     )
 
+    commission_store = CommissionSessionStore()
+
     yield Deps(
         config=config,
         chat_repo=chat_repo,
@@ -128,6 +132,7 @@ async def create_deps(
         tokens=Tokens(oauth, identity_repo),
         db=db,
         stream_manager=stream_manager,
+        commission_session_store=commission_store,
     )
 
     # shutdown routine

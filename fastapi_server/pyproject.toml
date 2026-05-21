@@ -34,6 +34,12 @@ dependencies = [
     "sqlmodel>=0.0.24",
     "uvicorn>=0.22.0",
     "httpx-sse>=0.4.3",
+    "pandas>=2.2.0",
+    "openpyxl>=3.1.0",
+    "langgraph>=1.1.0,<2.0.0",
+    "langgraph-checkpoint>=3.0.0",
+    "langchain-core>=0.3.0",
+    "datarobot-genai[langgraph]>=0.15.53",
 ]
 
 [project.optional-dependencies]
