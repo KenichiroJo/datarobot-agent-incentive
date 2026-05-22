@@ -1,4 +1,4 @@
-import { DownloadIcon } from 'lucide-react';
+import { DownloadIcon, InfoIcon, SparklesIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 
@@ -9,6 +9,8 @@ import { COMMISSION_STEPS, Stepper } from '@/components/commission/Stepper';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { generateInsight } from '@/lib/commission-insight';
 
 function formatYen(n: number): string {
   return n.toLocaleString('ja-JP') + ' 円';
@@ -19,11 +21,13 @@ const PAGE_SIZE = 50;
 export function ResultPage() {
   const { sessionId = '' } = useParams<{ sessionId: string }>();
   const [page, setPage] = useState(1);
-  const [filter, setFilter] = useState<'all' | 'approved' | 'hitl_pending'>('approved');
+  // デフォルトは「すべて」: ReviewPage 経由していない場合でも明細が見られる
+  const [filter, setFilter] = useState<'all' | 'approved' | 'hitl_pending'>('all');
   const { data, isLoading } = useResults(sessionId, { status: filter, page, perPage: PAGE_SIZE });
 
   const rows = data?.results ?? [];
   const summary = data?.summary;
+  const insights = summary ? generateInsight(summary) : [];
 
   return (
     <div className="container mx-auto p-6 max-w-7xl space-y-6">
@@ -51,65 +55,145 @@ export function ResultPage() {
       {summary ? (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <KpiCard label="総レコード数" value={summary.total_records.toLocaleString('ja-JP')} />
-          <KpiCard label="自動完了" value={summary.auto_completed} tone="success" />
-          <KpiCard label="HITL 確定" value={summary.hitl_pending} tone="warning" />
+          <KpiCard
+            label="自動完了"
+            value={summary.auto_completed}
+            tone="success"
+            hint="マスタヒット件数"
+          />
+          <KpiCard
+            label="HITL 対象"
+            value={summary.hitl_pending}
+            tone="warning"
+            hint="未確定 (マスタ未ヒット / 高額アラート)"
+          />
           <KpiCard label="合計手数料" value={formatYen(summary.total_commission_amount)} />
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {insights.length > 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">取引先別合計</CardTitle>
+            <CardTitle className="text-base flex items-center gap-2">
+              <SparklesIcon className="w-4 h-4 text-yellow-500" />
+              インサイト
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="py-1">取引先</th>
-                  <th className="text-right">件数</th>
-                  <th className="text-right">合計</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(summary?.by_partner ?? []).slice(0, 10).map((p) => (
-                  <tr key={p.name} className="border-t">
-                    <td className="py-1">{p.name}</td>
-                    <td className="text-right py-1">{p.count}</td>
-                    <td className="text-right py-1 font-mono">{formatYen(p.total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="space-y-3 text-sm leading-relaxed">
+              {insights.map((line, i) => (
+                <p key={i} className="text-foreground">
+                  {line}
+                </p>
+              ))}
+            </div>
           </CardContent>
         </Card>
+      ) : null}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">商材別合計</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="py-1">商材</th>
-                  <th className="text-right">件数</th>
-                  <th className="text-right">合計</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(summary?.by_product ?? []).slice(0, 10).map((p) => (
-                  <tr key={p.name} className="border-t">
-                    <td className="py-1">{p.name}</td>
-                    <td className="text-right py-1">{p.count}</td>
-                    <td className="text-right py-1 font-mono">{formatYen(p.total)}</td>
+      <TooltipProvider>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">取引先別合計</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="py-1">取引先</th>
+                    <th className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 cursor-help">
+                            件数
+                            <InfoIcon className="w-3 h-3" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          全レコード数（マスタヒット + 未ヒット の合算）
+                        </TooltipContent>
+                      </Tooltip>
+                    </th>
+                    <th className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 cursor-help">
+                            合計
+                            <InfoIcon className="w-3 h-3" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          マスタヒット分のみの手数料合計（円）
+                        </TooltipContent>
+                      </Tooltip>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      </div>
+                </thead>
+                <tbody>
+                  {(summary?.by_partner ?? []).slice(0, 10).map((p) => (
+                    <tr key={p.name} className="border-t">
+                      <td className="py-1">{p.name}</td>
+                      <td className="text-right py-1">{p.count}</td>
+                      <td className="text-right py-1 font-mono">{formatYen(p.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">商材別合計</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="py-1">商材</th>
+                    <th className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 cursor-help">
+                            件数
+                            <InfoIcon className="w-3 h-3" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          全レコード数（マスタヒット + 未ヒット の合算）
+                        </TooltipContent>
+                      </Tooltip>
+                    </th>
+                    <th className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center gap-1 cursor-help">
+                            合計
+                            <InfoIcon className="w-3 h-3" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          マスタヒット分のみの手数料合計（円）
+                        </TooltipContent>
+                      </Tooltip>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(summary?.by_product ?? []).slice(0, 10).map((p) => (
+                    <tr key={p.name} className="border-t">
+                      <td className="py-1">{p.name}</td>
+                      <td className="text-right py-1">{p.count}</td>
+                      <td className="text-right py-1 font-mono">{formatYen(p.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </div>
+      </TooltipProvider>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -123,9 +207,9 @@ export function ResultPage() {
                 setPage(1);
               }}
             >
-              <option value="approved">確定済み</option>
-              <option value="hitl_pending">HITL対象</option>
               <option value="all">すべて</option>
+              <option value="approved">確定済み (承認後)</option>
+              <option value="hitl_pending">HITL 対象</option>
             </select>
           </div>
         </CardHeader>
