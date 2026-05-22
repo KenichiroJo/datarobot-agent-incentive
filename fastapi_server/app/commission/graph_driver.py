@@ -1,7 +1,7 @@
 """LangGraph 呼び出しをラップし、SSE イベント列に変換する。
 
-handler は ``agent.commission.graph.build_commission_graph()`` を遅延 import する。
-これによりエージェント側の依存が解決済みでない環境（テスト等）でも
+handler は ``app.commission_engine.graph.build_commission_graph()`` を遅延 import する。
+これにより langgraph 等の依存が解決済みでない環境（テスト等）でも
 FastAPI 起動時にエラーにならないように。
 """
 

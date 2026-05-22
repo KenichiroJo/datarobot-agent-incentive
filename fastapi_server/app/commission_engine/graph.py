@@ -8,14 +8,19 @@
 
 HITL は ``langgraph.types.interrupt`` を使う。再開時は ``Command(resume=decisions)`` を
 graph.invoke / astream の 1 引数として渡す。
+
+実装方針: LLM を使わずルールベースで supervisor / explainer を実装する。
+依存軽量化のため (datarobot-genai を fastapi_server に持ち込まない)。
+将来 LLM 拡張する場合は ``llm`` 引数を ``build_commission_graph`` に渡せるよう
+設計してある。
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Protocol
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
@@ -35,16 +40,11 @@ def get_checkpointer() -> MemorySaver:
     return _memory
 
 
-SUPERVISOR_SYSTEM_PROMPT = """あなたは販売管理手数料計算エージェントのスーパーバイザーです。
-ユーザのメッセージと現在の State をもとに、次にどのノードへルーティングするか決定してください。
+class LLMLike(Protocol):
+    """ダックタイプ的な LLM インタフェース (langchain BaseChatModel と互換)。"""
 
-選択肢:
-- "data_parser": ファイルがアップロード済みで、計算指示がある場合
-- "explainer": 計算結果について「説明して」「根拠を教えて」と問われた場合
-- "END": 通常のチャット応答で十分な場合
-
-応答は次のノード名のみを 1 単語で返してください (data_parser / explainer / END)。
-"""
+    def invoke(self, messages: list) -> Any:  # noqa: ANN401
+        ...
 
 
 def _detect_file_type(filename: str) -> str:
@@ -56,59 +56,30 @@ def _detect_file_type(filename: str) -> str:
     return "unknown"
 
 
-def supervisor_node_factory(llm: BaseChatModel):
-    """LLM を使ったルーティングノード。"""
+def supervisor_node(state: CommissionState) -> dict[str, Any]:
+    """ルールベースで次ノードを決定。LLM 不使用。
 
-    def supervisor(state: CommissionState) -> dict[str, Any]:
-        messages = state.get("messages", [])
-        if not messages:
-            return {"next_route": "END"}
+    優先順位:
+      1. messages 末尾に「説明」「根拠」キーワード + 計算結果あり → explainer
+      2. uploaded_files あり + 計算結果なし → data_parser
+      3. それ以外 → END
+    """
+    messages = state.get("messages", [])
+    last_user = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            last_user = m.content if isinstance(m.content, str) else str(m.content)
+            break
 
-        # 既に計算結果がある + メッセージに「説明」キーワード
-        last_user = ""
-        for m in reversed(messages):
-            if isinstance(m, HumanMessage):
-                last_user = (
-                    m.content if isinstance(m.content, str) else str(m.content)
-                )
-                break
+    if state.get("calculation_results") and (
+        "説明" in last_user or "根拠" in last_user or "なぜ" in last_user
+    ):
+        return {"next_route": "explainer"}
 
-        # シンプルなキーワードルーティング (LLM 呼び出しコスト削減)
-        if state.get("calculation_results") and (
-            "説明" in last_user or "根拠" in last_user or "なぜ" in last_user
-        ):
-            return {"next_route": "explainer"}
+    if state.get("uploaded_files") and not state.get("calculation_results"):
+        return {"next_route": "data_parser"}
 
-        if state.get("uploaded_files") and not state.get("calculation_results"):
-            return {"next_route": "data_parser"}
-
-        # 上記いずれでもなければ LLM に判断させる
-        try:
-            ai = llm.invoke(
-                [
-                    SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT),
-                    HumanMessage(
-                        content=f"User message: {last_user}\n"
-                        f"State summary: uploaded_files={len(state.get('uploaded_files', []) or [])}, "
-                        f"results={len(state.get('calculation_results', []) or [])}, "
-                        f"hitl_pending={len(state.get('pending_hitl', []) or [])}"
-                    ),
-                ]
-            )
-            decision = (
-                ai.content if isinstance(ai.content, str) else str(ai.content)
-            ).strip()
-            for opt in ("data_parser", "explainer", "END"):
-                if opt in decision:
-                    return {"next_route": opt}
-        except Exception as e:
-            return {
-                "next_route": "END",
-                "error_message": f"supervisor LLM error: {e}",
-            }
-        return {"next_route": "END"}
-
-    return supervisor
+    return {"next_route": "END"}
 
 
 def data_parser_node(state: CommissionState) -> dict[str, Any]:
@@ -209,7 +180,9 @@ def approve_node(state: CommissionState) -> dict[str, Any]:
     """承認結果を反映して approved_results を確定する。"""
     results = state.get("calculation_results") or []
     decisions = {
-        d["record_no"]: d for d in (state.get("user_decisions") or []) if "record_no" in d
+        d["record_no"]: d
+        for d in (state.get("user_decisions") or [])
+        if "record_no" in d
     }
 
     approved: list[dict] = []
@@ -218,7 +191,6 @@ def approve_node(state: CommissionState) -> dict[str, Any]:
         d = decisions.get(rn)
         if r.get("is_anomaly"):
             if not d:
-                # 未承認の異常レコードは除外
                 continue
             action = d.get("action")
             if action == "approve":
@@ -233,7 +205,6 @@ def approve_node(state: CommissionState) -> dict[str, Any]:
                         f"手動入力: {manual_amount} 円 (元: {r.get('total_commission')})"
                     )
                     approved.append(r2)
-            # "reject" の場合は approved に追加しない
         else:
             approved.append(r)
 
@@ -242,82 +213,58 @@ def approve_node(state: CommissionState) -> dict[str, Any]:
         "processing_status": "approved",
         "messages": [
             AIMessage(
-                content=f"承認確定: {len(approved)} 件を確定データに反映しました。CSV エクスポート可能です。"
+                content=f"承認確定: {len(approved)} 件を確定データに反映しました。Excel エクスポート可能です。"
             )
         ],
     }
 
 
-def explainer_node_factory(llm: BaseChatModel):
-    """LLM で計算根拠を日本語で説明するノード（ストリーミング対応）。"""
+def explainer_node(state: CommissionState) -> dict[str, Any]:
+    """計算根拠を整形して返すノード (LLM 不使用、テンプレ整形のみ)。"""
+    target = state.get("explain_record_no")
+    results = state.get("calculation_results") or []
+    record = None
+    if target is not None:
+        record = next((r for r in results if r.get("record_no") == target), None)
 
-    def explainer(state: CommissionState) -> dict[str, Any]:
-        target = state.get("explain_record_no")
-        results = state.get("calculation_results") or []
-        record = None
-        if target is not None:
-            record = next(
-                (r for r in results if r.get("record_no") == target), None
+    if record is None:
+        messages = state.get("messages", [])
+        if messages:
+            last = (
+                messages[-1].content
+                if isinstance(messages[-1].content, str)
+                else str(messages[-1].content)
             )
-
-        if record is None:
-            # 最後のメッセージから対象 record_no を推測（数字抽出）
-            messages = state.get("messages", [])
-            if messages:
-                last = (
-                    messages[-1].content
-                    if isinstance(messages[-1].content, str)
-                    else str(messages[-1].content)
+            m = re.search(r"(\d{3,})", last)
+            if m and results:
+                candidate = int(m.group(1))
+                record = next(
+                    (r for r in results if r.get("record_no") == candidate),
+                    None,
                 )
-                import re
 
-                m = re.search(r"(\d{3,})", last)
-                if m and results:
-                    candidate = int(m.group(1))
-                    record = next(
-                        (r for r in results if r.get("record_no") == candidate),
-                        None,
-                    )
+    if record is None:
+        return {
+            "messages": [
+                AIMessage(
+                    content="説明対象のレコードが見つかりませんでした。レコード番号を指定してください。"
+                )
+            ],
+            "processing_status": "explained",
+        }
 
-        if record is None:
-            return {
-                "messages": [
-                    AIMessage(
-                        content="説明対象のレコードが見つかりませんでした。レコード番号を指定してください。"
-                    )
-                ],
-                "processing_status": "explained",
-            }
-
-        trace_text = "\n".join(record.get("calculation_trace", []))
-        prompt = (
-            "あなたは手数料計算の説明アシスタントです。以下の計算トレースをもとに、"
-            "ユーザに対して計算根拠を 200 字程度の日本語でわかりやすく説明してください。\n"
-            "\n"
-            f"対象レコード No: {record.get('record_no')}\n"
-            f"取引先: {record.get('partner_name')}\n"
-            f"商材: {record.get('product')}\n"
-            f"合計手数料: {record.get('total_commission')} 円\n"
-            "\n"
-            f"計算トレース:\n{trace_text}\n"
-        )
-        try:
-            ai = llm.invoke([HumanMessage(content=prompt)])
-            content = (
-                ai.content if isinstance(ai.content, str) else str(ai.content)
-            )
-            return {
-                "messages": [AIMessage(content=content)],
-                "processing_status": "explained",
-            }
-        except Exception as e:
-            return {
-                "messages": [AIMessage(content=f"説明生成失敗: {e}")],
-                "processing_status": "error",
-                "error_message": str(e),
-            }
-
-    return explainer
+    trace = record.get("calculation_trace", [])
+    content = (
+        f"レコード No.{record.get('record_no')} の計算根拠:\n"
+        f"取引先: {record.get('partner_name')}\n"
+        f"商材: {record.get('product')}\n"
+        f"合計手数料: {record.get('total_commission'):,} 円\n\n"
+        + "\n".join(trace)
+    )
+    return {
+        "messages": [AIMessage(content=content)],
+        "processing_status": "explained",
+    }
 
 
 def _route_after_supervisor(state: CommissionState) -> str:
@@ -331,23 +278,30 @@ def _route_after_calculator(state: CommissionState) -> str:
 
 
 def commission_graph_factory(
-    llm: BaseChatModel,
+    llm: LLMLike | None = None,
     tools: list | None = None,
     verbose: bool = False,
 ):
     """手数料計算グラフを組み立てて返す。
 
+    Args:
+        llm: 現在は未使用 (LLM 不要のルールベース実装)。将来拡張用に予約。
+        tools: 同上、未使用。
+        verbose: 同上、未使用。
+
     Returns:
         コンパイル済み StateGraph (with MemorySaver checkpointer)
     """
+    del llm, tools, verbose  # 引数互換のため受け取るだけ
+
     g: StateGraph[CommissionState] = StateGraph(CommissionState)
 
-    g.add_node("supervisor", supervisor_node_factory(llm))
+    g.add_node("supervisor", supervisor_node)
     g.add_node("data_parser", data_parser_node)
     g.add_node("calculator", calculator_node)
     g.add_node("hitl_review", hitl_review_node)
     g.add_node("approve", approve_node)
-    g.add_node("explainer", explainer_node_factory(llm))
+    g.add_node("explainer", explainer_node)
 
     g.add_edge(START, "supervisor")
     g.add_conditional_edges(
@@ -372,13 +326,9 @@ def commission_graph_factory(
     return g.compile(checkpointer=_memory)
 
 
-def build_commission_graph(llm: BaseChatModel | None = None):
-    """シンプルなビルダー: LLM が未指定なら get_llm() を使う。"""
-    if llm is None:
-        from datarobot_genai.langgraph.llm import get_llm
-
-        llm = get_llm(model_name=None)
-    return commission_graph_factory(llm, tools=[])
+def build_commission_graph(llm: LLMLike | None = None):
+    """シンプルなビルダー。"""
+    return commission_graph_factory(llm=llm)
 
 
 __all__ = [
