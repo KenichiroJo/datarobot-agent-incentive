@@ -31,11 +31,12 @@ export function CalculatePage() {
     startedRef.current = true;
     setSession(sessionId);
 
-    const controller = new AbortController();
     appendLog(`[start] セッション ${sessionId.slice(0, 8)}... の計算を開始`);
 
+    // NOTE: AbortController は使わない。React StrictMode のダブルマウントで
+    // 接続が即座に abort される問題を回避するため、fire-and-forget で実行。
+    // ストリーム終了は done / error イベントで自然終了する。
     streamCalculate(sessionId, {
-      signal: controller.signal,
       onEvent: (event, data) => {
         const payload = data as Record<string, unknown>;
         if (event === 'progress' || event === 'status') {
@@ -52,13 +53,10 @@ export function CalculatePage() {
           }, 800);
         } else if (event === 'result') {
           const summary = (payload as { summary?: { total_records?: number } }).summary;
-          appendLog(
-            `[result] 計算完了 合計 ${summary?.total_records ?? '?'} 件`
-          );
+          appendLog(`[result] 計算完了 合計 ${summary?.total_records ?? '?'} 件`);
         } else if (event === 'done') {
           appendLog('[done] ストリーム終了');
           setDone(true);
-          // HITL がなかった場合は結果へ
           setTimeout(() => {
             navigate(PATHS.COMMISSION.RESULT.replace(':sessionId', sessionId));
           }, 800);
@@ -73,10 +71,6 @@ export function CalculatePage() {
       appendLog(`[exception] ${e instanceof Error ? e.message : String(e)}`);
       setHasError(true);
     });
-
-    return () => {
-      controller.abort();
-    };
   }, [sessionId, appendLog, navigate, setSession]);
 
   return (
