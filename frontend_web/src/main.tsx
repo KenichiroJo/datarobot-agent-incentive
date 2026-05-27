@@ -18,6 +18,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter as Router } from 'react-router-dom';
 import './App.css';
+import 'driver.js/dist/driver.css';
 import { App } from './App.tsx';
 import { queryClient } from '@/api/query-client';
 import { QueryClientProvider } from '@tanstack/react-query';

@@ -72,7 +72,7 @@ export function ResultPage() {
       ) : null}
 
       {insights.length > 0 ? (
-        <Card>
+        <Card data-tour="insight-card">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <SparklesIcon className="w-4 h-4 text-yellow-500" />

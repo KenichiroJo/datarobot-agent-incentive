@@ -36,7 +36,7 @@ export function DashboardPage() {
             ウォーターサーバー販売代理店の月次手数料を AI エージェントで自動計算
           </p>
         </div>
-        <Button asChild>
+        <Button asChild data-tour="new-calc-button">
           <Link to={PATHS.COMMISSION.UPLOAD}>
             新規計算を開始
             <ArrowRightIcon className="w-4 h-4 ml-1" />
@@ -44,7 +44,7 @@ export function DashboardPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4" data-tour="dashboard-kpi">
         <KpiCard
           label="総処理件数"
           value={isLoading ? '...' : kpi.total_records.toLocaleString('ja-JP')}

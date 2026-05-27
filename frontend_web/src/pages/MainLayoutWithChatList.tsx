@@ -4,6 +4,7 @@ import { LayoutDashboardIcon, UploadIcon } from 'lucide-react';
 import { ChatSidebar } from '@/components/block/chat/chat-sidebar';
 import { useChatList } from '@/components/block/chat/hooks/use-chat-list';
 import { MainLayoutProvider } from '@/components/block/chat/main-layout-context';
+import { TutorialLauncher } from '@/components/tutorial/TutorialLauncher';
 import {
   SidebarMenuButton,
   SidebarMenuItem,
@@ -72,6 +73,7 @@ export function MainLayout() {
           </Link>
         </SidebarMenuButton>
       </SidebarMenuItem>
+      <TutorialLauncher autoStartPath={PATHS.COMMISSION.DASHBOARD} />
     </>
   );
 

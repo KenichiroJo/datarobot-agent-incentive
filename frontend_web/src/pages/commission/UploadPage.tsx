@@ -59,7 +59,7 @@ export function UploadPage() {
       </Card>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card>
+        <Card data-tour="upload-zone-sales">
           <CardHeader>
             <CardTitle className="text-base">売上明細</CardTitle>
           </CardHeader>
@@ -96,7 +96,11 @@ export function UploadPage() {
       </div>
 
       <div className="flex justify-end">
-        <Button onClick={onConfirm} disabled={!hasMinimum || uploadMut.isPending}>
+        <Button
+          onClick={onConfirm}
+          disabled={!hasMinimum || uploadMut.isPending}
+          data-tour="calculate-start"
+        >
           {uploadMut.isPending ? (
             <Loader2Icon className="w-4 h-4 mr-1 animate-spin" />
           ) : null}
