@@ -13,6 +13,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import AsyncIterator
@@ -23,11 +24,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.auth.ctx import must_get_auth_ctx
-from app.commission.graph_driver import (
-    resume_with_decisions,
-    run_calculate,
-    stream_to_sse,
-)
+from app.commission.graph_driver import run_calculate, stream_to_sse
+from app.commission_engine.hitl import apply_hitl_decisions
 from app.commission.schemas import (
     CalculateOptions,
     DashboardKPI,
@@ -76,13 +74,13 @@ async def upload_files(
 
     uploaded: list[UploadedFileInfo] = []
     for f in files:
-        content = await f.read()
         filename = f.filename or "unknown.xlsx"
         detected = _detect_type(filename)
-        rec = await store.add_file(
+        # 大容量対応: ファイル全体を RAM に載せずチャンク単位でディスクへ書き出す
+        rec = await store.add_file_streaming(
             session_id=sess.session_id,
             filename=filename,
-            content=content,
+            upload_file=f,
             detected_type=detected,
         )
         uploaded.append(
@@ -127,34 +125,17 @@ async def calculate(
     ]
 
     async def event_stream() -> AsyncIterator[str]:
-        # SSE 配信
+        # run_calculate が結果をセッションストアに直接書き込むため、
+        # ここでの後処理は不要。SSE をそのまま中継する。
         async for sse_str in stream_to_sse(
             run_calculate(
+                store=store,
                 session_id=session_id,
                 uploaded_files=files,
                 threshold=threshold,
             )
         ):
             yield sse_str
-        # ストリーム終了後にセッションのスナップショットを更新
-        from app.commission_engine.graph import get_checkpointer  # noqa: WPS433
-
-        try:
-            cp = get_checkpointer()
-            snap = cp.get(  # type: ignore[attr-defined]
-                {"configurable": {"thread_id": session_id}}
-            )
-            if snap and "channel_values" in snap:
-                values = snap["channel_values"]
-                await store.update_results(
-                    session_id,
-                    calculation_results=values.get("calculation_results") or [],
-                    pending_hitl=values.get("pending_hitl") or [],
-                    summary=values.get("summary") or {},
-                    processing_status=values.get("processing_status", "review"),
-                )
-        except Exception as e:
-            logger.warning("post-run state sync failed: %s", e)
 
     return StreamingResponse(
         event_stream(),
@@ -213,7 +194,7 @@ async def approve_hitl(
     body: HitlApproveRequest,
     _auth: AuthCtx[Metadata] = Depends(must_get_auth_ctx),
 ) -> HitlApproveResponse:
-    """HITL 承認結果でグラフを再開して approved_results を確定。"""
+    """HITL 承認結果を計算結果に直接適用して approved_results を確定。"""
     store = _get_store(request)
     sess = await store.get(session_id)
     if sess is None:
@@ -221,29 +202,15 @@ async def approve_hitl(
 
     decisions = [d.model_dump() for d in body.approvals]
 
-    # グラフを再開（ストリームは消費するだけ）
-    async for _ev, _data in resume_with_decisions(
-        session_id=session_id, decisions=decisions
-    ):
-        pass
-
-    # 再開後のスナップショットを反映
-    try:
-        from app.commission_engine.graph import get_checkpointer  # noqa: WPS433
-
-        cp = get_checkpointer()
-        snap = cp.get(  # type: ignore[attr-defined]
-            {"configurable": {"thread_id": session_id}}
-        )
-        if snap and "channel_values" in snap:
-            values = snap["channel_values"]
-            await store.update_results(
-                session_id,
-                approved_results=values.get("approved_results") or [],
-                processing_status=values.get("processing_status", "approved"),
-            )
-    except Exception as e:
-        logger.warning("approve snapshot sync failed: %s", e)
+    # 計算結果に決定を適用して確定データを生成（別スレッド: 大量行対策）
+    approved = await asyncio.to_thread(
+        apply_hitl_decisions, sess.calculation_results, decisions
+    )
+    await store.update_results(
+        session_id,
+        approved_results=approved,
+        processing_status="approved",
+    )
 
     approved_count = sum(1 for d in body.approvals if d.action == "approve")
     rejected_count = sum(1 for d in body.approvals if d.action == "reject")

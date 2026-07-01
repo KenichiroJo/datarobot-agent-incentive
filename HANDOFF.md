@@ -165,13 +165,15 @@ Claude Code に出した指示・意思決定を時系列で整理したもの�
    - 25/37ヶ月以降継続、PAP/PAS/PH の発動条件
 2. **マスタは複数社分の統合が前提**。サンプルはフォーカスタマーズ 1 社のみで
    ヒット率 0.7%。実運用では全代理店のマスタをマージして投入する。
-3. **LLM 連携は未実装**（依存衝突回避のため見送り）。
-   将来 `build_commission_graph(llm=...)` で LangChain BaseChatModel を渡せる
-   受け口は Protocol で用意済み。explainer の自然言語生成を LLM 化する余地あり。
-4. **セッションはインメモリ**（プロセス再起動で消失）。本番化時は sqlmodel テーブル or
-   LangGraph の SqliteSaver チェックポインタへ移行。
+3. **LLM 連携は未実装**（依存衝突回避のため見送り）。explainer の自然言語生成を
+   LLM 化する余地あり。
+4. **セッションはインメモリ**（プロセス再起動で消失）。本番化時は sqlmodel テーブルへ移行。
 5. **`dr run deploy` は未実施**。動作確認は Codespace の `dr run dev` まで。
 6. **HITL 異常閾値は固定 100,000 円**。商材別に動的化する余地あり。
+7. **大容量時のトレース圧縮**: 2 万行超では確定済み（異常なし）レコードの
+   `calculation_trace` を末尾 1 行に圧縮している（メモリ対策）。HITL 対象は全保持。
+8. **アップロード上限**: コード側はストリーミングで対応済みだが、DataRobot の
+   notebook プロキシに固有のリクエストサイズ上限がある場合は別途要確認。
 
 ---
 
@@ -186,5 +188,33 @@ dr task run fastapi_server:install
 dr task run frontend_web:install
 dr run dev
 ```
+
+---
+
+## 9. 大容量ファイル対応（2026-06 追加実装）
+
+**背景**: 138MB 以降の xlsx で「supervisor 完了」の直後に固まる事象。原因は
+data_parser 工程で ①openpyxl のメモリ肥大 + ②同期パースがイベントループを塞ぎ
+SSE 進捗が流れないこと。
+
+**対応（`fastapi_server` のみ、計算式は不変）**:
+- **パーサを openpyxl `read_only` ストリーミングに変更**（`pandas.read_excel` を廃止）。
+  さらに計算に不要な列を捨て、`raw` も保持しない → メモリを大幅削減。
+  `excel_parser.py` の `parse_sales_excel/parse_master_excel` は `progress_cb` 対応。
+- **パース・計算を別スレッド実行**（`graph_driver.py` の `_run_blocking_with_progress`、
+  `run_in_executor` + thread-safe `asyncio.Queue`）→ イベントループを塞がず、
+  行数ベースの進捗が SSE でリアルタイムに流れる。
+- **アップロードをチャンク書き込み**（`session_store.add_file_streaming`）→
+  数百 MB を一度に RAM へ載せない。
+- **アーキテクチャ変更**: 計算パスから **LangGraph を撤去**。interrupt/checkpointer は
+  ハング要因かつ大容量スレッド処理と相性が悪いため、`run_calculate` が
+  パース→計算→異常検知→集計を直接オーケストレーションし、結果をセッションストアへ
+  直書き。HITL 承認は `commission_engine/hitl.py::apply_hitl_decisions` で
+  計算結果へ直接適用する方式に簡素化。`graph.py`/`state.py` は削除。
+  （※元指示書の「LangGraph 6 ノード」設計からは意図的に逸脱。ロバスト性を優先）
+
+**検証済み**: サンプル（3.2MB / 8,149 行）で従来と完全一致
+（マスタ 828 / ヒット 61 / 合計 ¥2,390,750）、パース 1.1 秒。
+300MB 級の実地確認は Codespace で要実施。
 
 ブラウザで frontend URL（`/notebook-sessions/.../ports/5173`）を開く。

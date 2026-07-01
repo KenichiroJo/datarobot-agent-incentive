@@ -7,6 +7,7 @@ LLM は使用せず、取引条件マスタを参照したルールベースの�
 from app.commission_engine.anomaly_detector import detect_anomalies
 from app.commission_engine.commission_calculator import calculate_commission
 from app.commission_engine.excel_parser import parse_master_excel, parse_sales_excel
+from app.commission_engine.hitl import apply_hitl_decisions
 from app.commission_engine.report_generator import generate_summary
 from app.commission_engine.schemas import (
     CommissionResult,
@@ -20,6 +21,7 @@ __all__ = [
     "MasterRecord",
     "SalesRecord",
     "SummaryReport",
+    "apply_hitl_decisions",
     "calculate_commission",
     "detect_anomalies",
     "generate_summary",

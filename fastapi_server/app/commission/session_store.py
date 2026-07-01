@@ -97,6 +97,45 @@ class CommissionSessionStore:
         sess.uploaded_files.append(f)
         return f
 
+    async def add_file_streaming(
+        self,
+        session_id: str,
+        filename: str,
+        upload_file: Any,
+        detected_type: str,
+        chunk_size: int = 4 * 1024 * 1024,
+    ) -> UploadedFile:
+        """Starlette UploadFile をチャンク単位でディスクに書き出す（大容量対応）。
+
+        ファイル全体を一度に RAM へ載せないため、数百 MB のアップロードでも
+        メモリを圧迫しない。
+        """
+        sess = await self.get(session_id)
+        if sess is None:
+            raise KeyError(session_id)
+        file_id = uuid4().hex
+        safe_name = f"{file_id}_{filename}"
+        target = self.upload_root / session_id / safe_name
+
+        size = 0
+        with target.open("wb") as out:
+            while True:
+                chunk = await upload_file.read(chunk_size)
+                if not chunk:
+                    break
+                out.write(chunk)
+                size += len(chunk)
+
+        f = UploadedFile(
+            file_id=file_id,
+            filename=filename,
+            path=str(target),
+            size=size,
+            detected_type=detected_type,
+        )
+        sess.uploaded_files.append(f)
+        return f
+
     async def update_results(
         self,
         session_id: str,
