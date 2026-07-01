@@ -5,7 +5,7 @@ import type { HitlDecision } from './types';
 
 export function useUploadFiles() {
   return useMutation({
-    mutationFn: (files: File[]) => uploadFiles(files),
+    mutationFn: (input: { sales: File[]; master: File[] }) => uploadFiles(input),
   });
 }
 

@@ -30,9 +30,8 @@ export function UploadPage() {
   const hasMinimum = salesFiles.length > 0 && masterFiles.length > 0;
 
   const onConfirm = async () => {
-    const allFiles = [...salesFiles, ...masterFiles];
     try {
-      const res = await uploadMut.mutateAsync(allFiles);
+      const res = await uploadMut.mutateAsync({ sales: salesFiles, master: masterFiles });
       setSession(res.session_id);
       setFilenames(res.uploaded.map((u) => u.filename));
       clearLog();

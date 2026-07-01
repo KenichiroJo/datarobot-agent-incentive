@@ -65,17 +65,27 @@ def _get_store(request: Request) -> CommissionSessionStore:
 @commission_router.post("/upload", response_model=UploadResponse)
 async def upload_files(
     request: Request,
-    files: list[UploadFile] = File(...),
+    sales: list[UploadFile] = File(default=[]),
+    master: list[UploadFile] = File(default=[]),
+    files: list[UploadFile] = File(default=[]),
     _auth: AuthCtx[Metadata] = Depends(must_get_auth_ctx),
 ) -> UploadResponse:
-    """Excel ファイル複数を受け取って一時保存し、セッション ID を返す。"""
+    """Excel ファイルを受け取って一時保存し、セッション ID を返す。
+
+    UI の 2 つのドロップゾーンに対応して ``sales`` / ``master`` フィールドで
+    種別を明示的に受け取る（ファイル名に依存しない）。``files`` は後方互換用で、
+    ファイル名から種別を推定する。
+    """
     store = _get_store(request)
+    if not sales and not master and not files:
+        raise HTTPException(status_code=400, detail="ファイルがありません")
     sess = await store.create()
 
     uploaded: list[UploadedFileInfo] = []
-    for f in files:
+
+    async def _save(f: UploadFile, forced_type: str | None) -> None:
         filename = f.filename or "unknown.xlsx"
-        detected = _detect_type(filename)
+        detected = forced_type or _detect_type(filename)
         # 大容量対応: ファイル全体を RAM に載せずチャンク単位でディスクへ書き出す
         rec = await store.add_file_streaming(
             session_id=sess.session_id,
@@ -91,6 +101,13 @@ async def upload_files(
                 detected_type=detected,  # type: ignore[arg-type]
             )
         )
+
+    for f in sales:
+        await _save(f, "sales")
+    for f in master:
+        await _save(f, "master")
+    for f in files:  # 後方互換: 種別はファイル名から推定
+        await _save(f, None)
 
     return UploadResponse(
         session_id=sess.session_id,

@@ -8,10 +8,16 @@ import type {
   UploadResponse,
 } from './types';
 
-export async function uploadFiles(files: File[]): Promise<UploadResponse> {
+export async function uploadFiles(input: {
+  sales: File[];
+  master: File[];
+}): Promise<UploadResponse> {
   const fd = new FormData();
-  for (const f of files) {
-    fd.append('files', f);
+  for (const f of input.sales) {
+    fd.append('sales', f);
+  }
+  for (const f of input.master) {
+    fd.append('master', f);
   }
   const res = await apiClient.post<UploadResponse>('/v1/commission/upload', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
