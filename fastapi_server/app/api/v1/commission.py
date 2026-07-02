@@ -157,7 +157,11 @@ async def calculate(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 

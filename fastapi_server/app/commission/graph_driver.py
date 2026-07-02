@@ -28,6 +28,12 @@ _TRACE_TRIM_THRESHOLD = 20_000
 
 _CALC_PROGRESS_EVERY = 2000
 
+# 無通信がこの秒数続いたら keepalive を送る。プロキシ (proxy_read_timeout
+# 既定 60s) のアイドルタイムアウトによる SSE 切断を防ぐため。
+_HEARTBEAT_SEC = 15.0
+# SSE コメント行。フロントの自前パーサでは event:/data: に一致しないため無害に無視される。
+_HEARTBEAT_FRAME = ": ping\n\n"
+
 
 def _sse_event(event: str, data: dict | None = None) -> str:
     """SSE フレームを生成する。"""
@@ -129,7 +135,9 @@ async def run_calculate(
             async for kind, a, _b in _run_blocking_with_progress(
                 parse_master_excel, mf["path"]
             ):
-                if kind == "result":
+                if kind == "progress":
+                    yield "progress", {"message": f"マスタ {a:,} 行 読み込み中…"}
+                elif kind == "result":
                     master.update(a)
                 elif kind == "error":
                     raise a
@@ -219,6 +227,38 @@ async def run_calculate(
 async def stream_to_sse(
     iterator: AsyncIterator[tuple[str, dict]],
 ) -> AsyncIterator[str]:
-    """(event, data) のイテレータを SSE 文字列に変換。"""
-    async for ev, data in iterator:
-        yield _sse_event(ev, data)
+    """(event, data) のイテレータを SSE 文字列に変換し、keepalive を挿入する。
+
+    重いパース/計算の最中でソースが長時間 yield しなくても、_HEARTBEAT_SEC ごとに
+    SSE コメント行を送出してプロキシのアイドルタイムアウトによる切断を防ぐ。
+
+    実装: ソースを背景タスクでキューに流し込み、本ループはタイムアウト付きで
+    キューから取り出す。タイムアウト時のみ keepalive を送る（イベントは取りこぼさない）。
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    done = object()
+
+    async def _pump() -> None:
+        try:
+            async for item in iterator:
+                await queue.put(item)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("sse source failed")
+            await queue.put(("error", {"message": str(e)}))
+        finally:
+            await queue.put(done)
+
+    task = asyncio.ensure_future(_pump())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), _HEARTBEAT_SEC)
+            except asyncio.TimeoutError:
+                yield _HEARTBEAT_FRAME
+                continue
+            if item is done:
+                return
+            ev, data = item
+            yield _sse_event(ev, data)
+    finally:
+        task.cancel()
